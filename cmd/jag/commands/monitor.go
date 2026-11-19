@@ -172,11 +172,29 @@ func lookupUSBConsole(port string) *enumerator.PortDetails {
 	}
 	for _, candidate := range ports {
 		if candidate.IsUSB && strings.HasPrefix(strings.ToUpper(candidate.SerialNumber), s31ConsoleSerialPrefix) &&
-			(candidate.Name == port || (runtime.GOOS == "windows" && strings.EqualFold(candidate.Name, port))) {
+			sameMonitorPortName(candidate.Name, port, runtime.GOOS) {
 			return candidate
 		}
 	}
 	return nil
+}
+
+// Darwin exposes separate callout (cu) and dial-in (tty) nodes for the same
+// serial device. The enumerator returns the callout node, but either can be
+// passed explicitly to monitor.
+func sameMonitorPortName(a, b, goos string) bool {
+	if goos == "windows" {
+		return strings.EqualFold(a, b)
+	}
+	if goos == "darwin" {
+		if strings.HasPrefix(a, "/dev/tty.") {
+			a = "/dev/cu." + strings.TrimPrefix(a, "/dev/tty.")
+		}
+		if strings.HasPrefix(b, "/dev/tty.") {
+			b = "/dev/cu." + strings.TrimPrefix(b, "/dev/tty.")
+		}
+	}
+	return a == b
 }
 
 func reopenMonitorUSB(ctx context.Context, previous *enumerator.PortDetails, baud int) (*serialPort, string, error) {
