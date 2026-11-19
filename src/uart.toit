@@ -24,7 +24,10 @@ class EndpointUart implements Endpoint:
   run device/Device -> none:
     logger.debug "starting endpoint"
     baud-rate := config_["baud"]
-    port := uart.Port.console --large-buffers
+    // Bulk images use stop-and-wait chunks of at most 512 bytes. The default
+    // 768-byte receive buffer can hold one complete chunk and its framing;
+    // larger command frames are drained incrementally by the reader.
+    port := uart.Port.console
 
     try:
       logger.info "switching baud rate to $baud-rate"
@@ -84,6 +87,7 @@ class UartClient:
   static COMMAND-FIRMWARE_ ::= 5
   static COMMAND-INSTALL_ ::= 6
   static COMMAND-RUN_ ::= 7
+  static COMMAND-CONFIG_ ::= 8
   static COMMAND-UNKNOWN_ ::= 99
 
   static ACK-RESPONSE_ ::= 255
@@ -190,6 +194,9 @@ class UartClient:
     if command == COMMAND-RUN_:
       handle-install-run data --run
       return
+    if command == COMMAND-CONFIG_:
+      handle-config data
+      return
     send-response COMMAND-UNKNOWN_ #[]
     throw "Unknown command: $command"
 
@@ -219,6 +226,10 @@ class UartClient:
   handle-list-containers data/ByteArray -> none:
     result := ubjson.encode registry_.entries
     send-response COMMAND-LIST-CONTAINERS_ result
+
+  handle-config data/ByteArray -> none:
+    logger.debug "handle config request"
+    send-response COMMAND-CONFIG_ (ubjson.encode (config-payload device))
 
   handle-uninstall data/ByteArray -> none:
     logger.debug "handle uninstall request"

@@ -10,6 +10,7 @@ import uuid
 import monitor
 
 import encoding.tison
+import encoding.ubjson
 
 import system
 import system.assets
@@ -127,39 +128,46 @@ run-installed-containers -> none:
     start-image image "started" name defines
 
 serve device/Device endpoints/List -> none:
+  if endpoints.size == 1:
+    serve-endpoint device endpoints.first
+    return
+
   lambdas := endpoints.map: | endpoint/Endpoint | ::
-    while true:
-      attempts ::= 3
-      failures := 0
-      while failures < attempts:
-        exception := catch:
-          // If the endpoint needs network it might be blocked by the network
-          // manager until the endpoint is allowed to use the network.
-          wifi-manager.serve device endpoint
-
-        if firmware-is-upgrade-pending: firmware.upgrade
-
-        if endpoint.uses-network and wifi-manager.network-is-disabled:
-          // If we were asked to shut down because the network was
-          // disabled we may have gotten an exception. Ignore it.
-          exception = null
-
-        // Log exceptions and count the failures so we can back off
-        // and avoid excessive attempts to re-open the network.
-        if exception:
-          failures++
-          logger.warn "running Jaguar failed due to '$exception' ($failures/$attempts)"
-
-      // If we need to validate the firmware and we've failed to do so
-      // in the first round of attempts, we roll back to the previous
-      // firmware right away.
-      if firmware-is-validation-pending:
-        logger.error "firmware update was rejected after failing to connect or validate"
-        firmware.rollback
-      backoff := Duration --s=5
-      logger.info "backing off for $backoff"
-      sleep backoff
+    serve-endpoint device endpoint
   Task.group lambdas
+
+serve-endpoint device/Device endpoint/Endpoint -> none:
+  while true:
+    attempts ::= 3
+    failures := 0
+    while failures < attempts:
+      exception := catch:
+        // If the endpoint needs network it might be blocked by the network
+        // manager until the endpoint is allowed to use the network.
+        wifi-manager.serve device endpoint
+
+      if firmware-is-upgrade-pending: firmware.upgrade
+
+      if endpoint.uses-network and wifi-manager.network-is-disabled:
+        // If we were asked to shut down because the network was
+        // disabled we may have gotten an exception. Ignore it.
+        exception = null
+
+      // Log exceptions and count the failures so we can back off
+      // and avoid excessive attempts to re-open the network.
+      if exception:
+        failures++
+        logger.warn "running Jaguar failed due to '$exception' ($failures/$attempts)"
+
+    // If we need to validate the firmware and we've failed to do so
+    // in the first round of attempts, we roll back to the previous
+    // firmware right away.
+    if firmware-is-validation-pending:
+      logger.error "firmware update was rejected after failing to connect or validate"
+      firmware.rollback
+    backoff := Duration --s=5
+    logger.info "backing off for $backoff"
+    sleep backoff
 
 validation-mutex / monitor.Mutex ::= monitor.Mutex
 validate-firmware --reason/string -> none:
@@ -170,6 +178,19 @@ validate-firmware --reason/string -> none:
         firmware-is-validation-pending = false
       else:
         logger.error "firmware update failed to validate"
+
+/// The firmware config and the Jaguar config of the $device.
+config-payload device/Device -> Map:
+  return {
+    "firmware": get-firmware-config_,
+    "jaguar": device.config,
+  }
+
+/// The decoded firmware config, or an empty map if there is none.
+get-firmware-config_ -> Map:
+  encoded := firmware.config.ubjson
+  if encoded.is-empty: return {:}
+  return ubjson.decode encoded
 
 class Device:
   id/uuid.Uuid

@@ -123,7 +123,7 @@ func FlashCmd() *cobra.Command {
 	cmd.Flags().Uint("baud", 921600, "baud rate used for the serial flashing")
 	cmd.Flags().Bool("no-reset", false, "flash a device already in download mode without probing or resetting it (requires a compatible Toit SDK and a chip or envelope)")
 	cmd.Flags().Bool("skip-port-check", false, "accept the given port without checking")
-	addFirmwareFlashFlags(cmd, "name for the device, if not set a name will be auto generated")
+	addFirmwareFlashFlags(cmd, "name for the device, if not set a name will be auto generated", "hostname for the device; defaults to the device name")
 	addPartitionTableFlag(cmd)
 	return cmd
 }

@@ -2,6 +2,7 @@
 // Use of this source code is governed by an MIT-style license that can be
 // found in the LICENSE file.
 
+import encoding.json
 import encoding.ubjson
 import http
 import log
@@ -79,19 +80,18 @@ class EndpointHttp implements Endpoint:
       network.close
 
   identity-payload device/Device address/string -> ByteArray:
-    identity := """
-      { "method": "jaguar.identify",
-        "payload": {
-          "name": "$device.name",
-          "id": "$device.id",
-          "chip": "$device.chip",
-          "sdkVersion": "$system.vm-sdk-version",
-          "address": "$address",
-          "wordSize": $system.BYTES-PER-WORD
-        }
-      }
-    """
-    return identity.to-byte-array
+    identity := {
+      "method": "jaguar.identify",
+      "payload": {
+        "name": device.name,
+        "id": "$device.id",
+        "chip": device.chip,
+        "sdkVersion": system.vm-sdk-version,
+        "address": address,
+        "wordSize": system.BYTES-PER-WORD,
+      },
+    }
+    return json.encode identity
 
   broadcast-identity network/net.Interface device/Device address/string -> none:
     payload ::= identity-payload device address
@@ -186,10 +186,11 @@ class EndpointHttp implements Endpoint:
 
       // Handle listing containers.
       else if path == "/list" and request.method == http.GET:
-        result := ubjson.encode registry_.entries
-        writer.headers.set "Content-Type" "application/ubjson"
-        writer.headers.set "Content-Length" result.size.stringify
-        writer.out.write result
+        respond-ubjson writer registry_.entries
+
+      // Handle config requests.
+      else if path == "/config" and request.method == http.GET:
+        respond-ubjson writer (config-payload device)
 
       // Handle uninstalling containers.
       else if path == "/uninstall" and request.method == http.PUT:
@@ -241,6 +242,12 @@ class EndpointHttp implements Endpoint:
     if header := headers.single HEADER-CONTAINER-INTERVAL:
       defines[JAG-INTERVAL] = header
     return defines
+
+  respond-ubjson writer/http.ResponseWriter value/any -> none:
+    result := ubjson.encode value
+    writer.headers.set "Content-Type" "application/ubjson"
+    writer.headers.set "Content-Length" result.size.stringify
+    writer.out.write result
 
   respond-ok writer/http.ResponseWriter -> none:
     writer.headers.set "Content-Type" "application/json"
