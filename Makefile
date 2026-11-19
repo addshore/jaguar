@@ -16,6 +16,7 @@ endif
 
 ifdef JAG_TOIT_REPO_PATH
 SDK_PATH := $(JAG_TOIT_REPO_PATH)/build/host/sdk
+S31_SETUP := $(wildcard $(JAG_TOIT_REPO_PATH)/tools/setup-idf-s31.sh)
 else
 SDK_PATH := $(BUILD_SDK_DIR)
 endif
@@ -91,12 +92,14 @@ $(SDK_BUILD_MARKER):
 
 .PHONY: all-chips
 all-chips:
-	$(JAG_TOIT_REPO_PATH)/tools/setup-idf-s31.sh --install
 	make -C $(JAG_TOIT_REPO_PATH) ESP32_CHIP=esp32c3 esp32
 	make -C $(JAG_TOIT_REPO_PATH) ESP32_CHIP=esp32c6 esp32
-	make -C $(JAG_TOIT_REPO_PATH) ESP32_CHIP=esp32s31 esp32
 	make -C $(JAG_TOIT_REPO_PATH) ESP32_CHIP=esp32s2 esp32
 	make -C $(JAG_TOIT_REPO_PATH) ESP32_CHIP=esp32s3 esp32
+ifneq ($(S31_SETUP),)
+	$(S31_SETUP) --install
+	make -C $(JAG_TOIT_REPO_PATH) ESP32_CHIP=esp32s31 esp32
+endif
 
 .PHONY: force-rebuild-sdk
 force-rebuild-sdk:
@@ -112,12 +115,18 @@ download-sdk: $(BUILD_DIR)/$(JAG_BINARY)
 	rm -rf $(BUILD_SDK_DIR)
 	$(BUILD_DIR)/$(JAG_BINARY) --no-analytics setup sdk $(BUILD_SDK_DIR)
 
+TEST_CHIPS := esp32 esp32c3 esp32c6 esp32s2 esp32s3
+# The pinned release SDK has no S31 envelope. Test it with the source SDK.
+ifneq ($(S31_SETUP),)
+TEST_CHIPS += esp32s31
+endif
+
 .PHONY: test
 test: $(BUILD_DIR)/$(JAG_BINARY)
 	go test ./...
 	$(BUILD_DIR)/$(JAG_BINARY) toit run tests/uart-proxy-timeout-test.toit
 	@# For now just try to extract images for all chips.
-	@for chip in esp32 esp32c3 esp32c6 esp32s2 esp32s3 esp32s31; do \
+	@for chip in $(TEST_CHIPS); do \
 		set -e; \
 		tmp_dir=$$(mktemp -d); \
 		$(BUILD_DIR)/$(JAG_BINARY) \
