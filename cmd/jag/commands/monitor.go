@@ -11,12 +11,15 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
 	"go.bug.st/serial"
+	"go.bug.st/serial/enumerator"
 )
 
 func MonitorCmd() *cobra.Command {
@@ -26,8 +29,8 @@ func MonitorCmd() *cobra.Command {
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx, cancel := context.WithCancel(cmd.Context())
-			defer cancel()
+			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
+			defer stop()
 
 			port, err := cmd.Flags().GetString("port")
 			if err != nil {
@@ -67,26 +70,12 @@ func MonitorCmd() *cobra.Command {
 				return err
 			}
 
-			fmt.Printf("Starting serial monitor of port '%s' ...\n", port)
-			dev, err := serialOpen(port, int(baud))
+			dev, port, err := openMonitorPort(ctx, port, int(baud), attach, shouldProxy)
 			if err != nil {
 				return err
 			}
 			defer dev.Close()
-
-			signalChan := make(chan os.Signal, 1)
-			signal.Notify(signalChan, os.Interrupt, syscall.SIGTERM)
-
-			// Handle signals in a separate goroutine.
-			go func() {
-				<-signalChan
-				fmt.Printf("\nInterrupt received, shutting down gracefully...\n")
-				cancel()
-			}()
-
-			if !attach {
-				dev.Reboot()
-			}
+			fmt.Printf("Starting serial monitor of port '%s' ...\n", port)
 
 			var logReader io.Reader = dev
 
@@ -135,12 +124,104 @@ func MonitorCmd() *cobra.Command {
 	return cmd
 }
 
-func serialOpen(port string, baud int) (*serialPort, error) {
+// The S31 USB-OTG console uses this prefix followed by the chip's MAC address.
+const s31ConsoleSerialPrefix = "TOITS31"
+
+func openMonitorPort(ctx context.Context, port string, baud int, attach, shouldProxy bool) (*serialPort, string, error) {
+	resolved := port
+	if path, err := filepath.EvalSymlinks(port); err == nil {
+		resolved = path
+	}
+	hasModemLines := !strings.HasPrefix(resolved, "/dev/pts/")
+	reboot := !attach && hasModemLines
+	var usb *enumerator.PortDetails
+	if hasModemLines {
+		usb = lookupUSBConsole(resolved)
+	}
+	if usb != nil && shouldProxy {
+		return nil, port, fmt.Errorf("the ESP32-S31 USB console only carries logs; use a UART connection for --proxy")
+	}
+
+	dev, err := serialOpen(port, baud, hasModemLines && usb == nil)
+	if err != nil || !reboot {
+		return dev, port, err
+	}
+	if usb != nil {
+		// The S31 OTG console recognizes 1200 8E2 as a normal-boot reset request.
+		err := dev.SetMode(&serial.Mode{
+			BaudRate: 1200,
+			DataBits: 8,
+			Parity:   serial.EvenParity,
+			StopBits: serial.TwoStopBits,
+		})
+		dev.Close()
+		if err != nil {
+			return nil, port, fmt.Errorf("could not request an ESP32-S31 USB reset on '%s': %w", port, err)
+		}
+		fmt.Printf("Waiting for the ESP32-S31 USB console to reconnect ...\n")
+		return reopenMonitorUSB(ctx, usb, baud)
+	}
+	dev.Reboot()
+	return dev, port, nil
+}
+
+func lookupUSBConsole(port string) *enumerator.PortDetails {
+	ports, err := enumerator.GetDetailedPortsList()
+	if err != nil {
+		return nil
+	}
+	for _, candidate := range ports {
+		if candidate.IsUSB && strings.HasPrefix(strings.ToUpper(candidate.SerialNumber), s31ConsoleSerialPrefix) &&
+			(candidate.Name == port || (runtime.GOOS == "windows" && strings.EqualFold(candidate.Name, port))) {
+			return candidate
+		}
+	}
+	return nil
+}
+
+func reopenMonitorUSB(ctx context.Context, previous *enumerator.PortDetails, baud int) (*serialPort, string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	detached := false
+
+	for {
+		ports, err := enumerator.GetDetailedPortsList()
+		if err == nil {
+			next := matchingMonitorUSB(ports, previous)
+			if next == nil {
+				detached = true
+			} else if detached || next.Name != previous.Name {
+				dev, err := serialOpen(next.Name, baud, false)
+				if err == nil {
+					return dev, next.Name, nil
+				}
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return nil, previous.Name, fmt.Errorf("ESP32-S31 USB console on '%s' did not reconnect after reset: %w", previous.Name, ctx.Err())
+		case <-ticker.C:
+		}
+	}
+}
+
+func matchingMonitorUSB(ports []*enumerator.PortDetails, previous *enumerator.PortDetails) *enumerator.PortDetails {
+	for _, port := range ports {
+		if port.IsUSB && strings.EqualFold(port.VID, previous.VID) &&
+			strings.EqualFold(port.PID, previous.PID) && strings.EqualFold(port.SerialNumber, previous.SerialNumber) {
+			return port
+		}
+	}
+	return nil
+}
+
+func serialOpen(port string, baud int, setModemLines bool) (*serialPort, error) {
 	mode := &serial.Mode{BaudRate: baud}
-	if !strings.HasPrefix(port, "/dev/pts/") {
-		// Make sure we don't accidentally reset the device on open. Pseudo
-		// terminals, such as QEMU's serial ports, don't have modem-control
-		// lines and reject this configuration with ENOTTY.
+	if setModemLines {
+		// Keep both lines asserted on open to avoid accidentally rebooting UART
+		// devices. Pseudo-terminals and the S31 console do not need this setup.
 		mode.InitialStatusBits = &serial.ModemOutputBits{
 			RTS: true,
 			DTR: true,

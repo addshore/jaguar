@@ -386,5 +386,22 @@ build/jag run $JAG_TOIT_REPO_PATH/examples/hello.toit
 build/jag monitor
 ```
 
+## ESP32-S31 native USB
+
+Use a source checkout of Toit with ESP32-S31 support via `JAG_TOIT_REPO_PATH`.
+After building Jaguar as above, install the S31 toolchain and build the envelope.
+
+```sh
+"$JAG_TOIT_REPO_PATH/tools/setup-idf-s31.sh" --install
+make -C "$JAG_TOIT_REPO_PATH" esp32s31
+```
+
+Put the board in download mode and run
+`build/jag flash --chip=esp32s31 --no-reset --port <download-port>`.
+Then boot the board normally and run `build/jag monitor --port <console-port>`.
+The USB console may appear on a different port. Jaguar requests a normal reboot
+and reconnects to the same USB device. Use `--attach` to monitor without
+rebooting. The USB console carries logs. Use a hardware UART for `--proxy`.
+
 ## Contributing
 We welcome and value your [open source contributions](CONTRIBUTING.md) to Jaguar.

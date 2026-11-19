@@ -45,6 +45,11 @@ func FlashCmd() *cobra.Command {
 				return err
 			}
 
+			noReset, err := cmd.Flags().GetBool("no-reset")
+			if err != nil {
+				return err
+			}
+
 			probeChipType := func(ctx context.Context, sdk *SDK) (string, error) {
 				result, err := ProbeChipType(ctx, port, sdk)
 				if err != nil {
@@ -66,7 +71,11 @@ func FlashCmd() *cobra.Command {
 				}
 				return result, err
 			}
-			return withFirmware(cmd, args, probeChipType, nil, func(id string, envelopeFile *os.File, config map[string]interface{}, partitionArgs []string) error {
+			var probe probeChip
+			if !noReset {
+				probe = probeChipType
+			}
+			return withFirmware(cmd, args, probe, nil, func(id string, envelopeFile *os.File, config map[string]interface{}, partitionArgs []string) error {
 
 				sdk, err := GetSDK(ctx)
 				if err != nil {
@@ -77,6 +86,9 @@ func FlashCmd() *cobra.Command {
 					"flash",
 					"--port", port,
 					"--baud", strconv.Itoa(int(baud)),
+				}
+				if noReset {
+					flashArguments = append(flashArguments, "--no-reset")
 				}
 				flashArguments = append(flashArguments, partitionArgs...)
 
@@ -109,6 +121,7 @@ func FlashCmd() *cobra.Command {
 
 	cmd.Flags().StringP("port", "p", ConfiguredPort(), "serial port to flash via")
 	cmd.Flags().Uint("baud", 921600, "baud rate used for the serial flashing")
+	cmd.Flags().Bool("no-reset", false, "flash a device already in download mode without probing or resetting it (requires a compatible Toit SDK and a chip or envelope)")
 	cmd.Flags().Bool("skip-port-check", false, "accept the given port without checking")
 	addFirmwareFlashFlags(cmd, "name for the device, if not set a name will be auto generated")
 	addPartitionTableFlag(cmd)
